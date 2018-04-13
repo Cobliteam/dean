@@ -1,0 +1,9 @@
+doc_branch: "docs/{{ branch }}"
+aggregate:
+  paths:
+    /ruler:
+      - type: git
+        url: git@github.com:Cobliteam/ruler.git
+    /ansible:
+      - type: git
+        url: git@github.com:Cobliteam/ansible.git

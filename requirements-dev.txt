@@ -1,7 +1,9 @@
 pytest
 pytest-mock
 pytest-cov
+git+https://github.com/pycqa/pyflakes.git
 flake8
 tox
 bumpversion
 twine
+mypy

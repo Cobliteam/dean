@@ -15,7 +15,8 @@ setup(
     license='MIT',
     install_requires=[
         'pyyaml',
-
+        'GitPython',
+        'dataclasses; python_version < "3.7"'
     ],
     entry_points={
         'console_scripts': ['dean=dean.main:main']
