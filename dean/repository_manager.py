@@ -1,20 +1,19 @@
 import asyncio
 import logging
 import os
-import random
 import re
-import signal
 import shutil
 import subprocess
-import sys
 import tempfile
-from typing import Any, Awaitable, Callable, Optional, T
-
+from typing import Any, AsyncContextManager, Awaitable, Callable, Dict, List, \
+                   Optional, Set, TypeVar
 from dataclasses import dataclass, field
 
 from dean.config.model import Repository
 from dean.util import async_subprocess_run
 
+
+T = TypeVar('T')
 
 logger = logging.getLogger(__name__)
 
@@ -49,7 +48,7 @@ class LocalRepository(GitAsyncBase):
 
     def __post_init__(self) -> None:
         self._lock = asyncio.Lock(loop=self.loop)
-        self._cloned_fut = None
+        self._cloned_fut: Optional[Awaitable[Any]] = None
 
     async def _clone(self) -> None:
         async with self._lock:
@@ -71,7 +70,8 @@ class LocalRepository(GitAsyncBase):
     async def clone(self) -> None:
         async with self._lock:
             if not self._cloned_fut:
-                self._cloned_fut = asyncio.Task(self._clone(), loop=self.loop)
+                self._cloned_fut = \
+                    asyncio.ensure_future(self._clone(), loop=self.loop)
 
         await self._cloned_fut
 
@@ -99,28 +99,22 @@ class LocalRepository(GitAsyncBase):
 class LocalWorktree(GitAsyncBase):
     repository: LocalRepository
     revision: str
+    path: str
     loop: asyncio.AbstractEventLoop
-    path: Optional[str] = None
     detach: bool = False
 
     def __post_init__(self):
         self._tmpdir = None
         self._created = False
 
-    async def _checkout(self) -> None:
+    async def create(self) -> None:
+        if self._created:
+            return
+
+        await self.repository.clone()
         await self.repository._add_worktree(
             self.path, self.revision, detach=self.detach)
         self._created = True
-
-    async def create(self) -> None:
-        await self.repository.clone()
-
-        if not self.path:
-            self._tmpdir = \
-                await self.delay(tempfile.mkdtemp)
-            self.path = os.path.join(self._tmpdir, 'worktree')
-
-        await self._checkout()
 
     async def destroy(self) -> None:
         if self._created:
@@ -135,7 +129,26 @@ class LocalWorktree(GitAsyncBase):
             await self.rm_dir(self._tmpdir)
             self._tmpdir = None
 
-        self.path = None
+
+class _WorktreeRunner(AsyncContextManager[LocalWorktree]):
+    def __init__(self, worktree: LocalWorktree, *,
+                 semaphore: asyncio.BoundedSemaphore) -> None:
+        self.when_done: asyncio.Future[None] = asyncio.Future()
+        self._worktree = worktree
+        self._semaphore = semaphore
+
+    async def __aenter__(self) -> LocalWorktree:
+        await self._semaphore.acquire()
+        await self._worktree.create()
+        return self._worktree
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb) -> None:
+        await self._worktree.destroy()
+        self._semaphore.release()
+        if exc_val is not None:
+            self.when_done.set_exception(exc_val)
+        else:
+            self.when_done.set_result(None)
 
 
 @dataclass
@@ -147,78 +160,28 @@ class RepositoryManager:
 
     def __post_init__(self):
         self._parallelism_sem = asyncio.BoundedSemaphore(self.parallelism)
-        self._repos = {}
-        self._worktrees = []
+        self._repos: Dict[str, LocalRepository] = {}
 
-    async def __aenter__(self):
-        return self
-
-    async def __aexit__(self, exc_type, exc_val, exc_tb):
-        for worktree in self._worktrees:
-            await worktree.destroy()
-
-    def add(self, repository: Repository) -> LocalWorktree:
+    def _get_local_repository(self, repository: Repository) -> LocalRepository:
         url = repository.url
 
-        local_repo = self._repos.get(url)
-        if not local_repo:
-            fname = re.sub(r'/+', '_', url)
-            path = os.path.join(self.base_dir, fname)
-            local_repo = self._repos.setdefault(
-                url, LocalRepository(url=url, path=path, loop=self.loop))
+        existing_repo = self._repos.get(url)
+        if existing_repo:
+            return existing_repo
 
+        fname = re.sub(r'/+', '_', url)
+        path = os.path.join(self.base_dir, fname)
+
+        local_repo = LocalRepository(url=repository.clone_url(),
+                                     path=path, loop=self.loop)
+        self._repos[url] = local_repo
+        return local_repo
+
+    def checkout(self, repository: Repository) -> _WorktreeRunner:
+        local_repo = self._get_local_repository(repository)
         worktree_path = tempfile.mkdtemp(prefix='worktree_', dir=self.base_dir)
-        worktree = local_repo.get_worktree(
-            path=worktree_path,
-            revision=repository.revision)
-        self._worktrees.append(worktree)
 
-    def process(self, callback: Callable[[Repository], Awaitable[T]]) \
-            -> asyncio.Future:
-        async def _process(worktree):
-            async with self._parallelism_sem:
-                await worktree.create()
-                result = await callback(worktree.repository)
-                return result
-
-        tasks = [_process(wt) for wt in self._worktrees]
-        return asyncio.gather(*tasks, loop=self.loop)
-
-
-if __name__ == '__main__':
-    async def process_repo(repository):
-        repo_name = repository.url.split('/')[-1]
-        sys.stdout.write('Processing: {}\n'.format(repo_name))
-        await asyncio.sleep(random.uniform(1, 5))
-        sys.stdout.write('Done: {}\n'.format(repo_name))
-
-    async def run():
-        # with tempfile.TemporaryDirectory() as tmp_dir:
-        tmp_dir = os.path.abspath('.repo-test')
-
-        try:
-            os.makedirs(tmp_dir)
-        except FileExistsError:
-            pass
-
-        async with RepositoryManager(tmp_dir, 100, loop=loop) as manager:
-            for i in range(1, 11):
-                for _ in range(100):
-                    path = os.path.abspath('repos/{}'.format(i))
-                    repo = Repository(path)
-                    manager.add(repo)
-            await manager.process(process_repo)
-
-    logging.basicConfig(level=logging.INFO)
-    loop = asyncio.get_event_loop()
-
-    def sigint_handler():
-        run_all.cancel()
-
-    loop.add_signal_handler(signal.SIGINT, sigint_handler)
-    run_all = asyncio.ensure_future(run())
-    try:
-        loop.run_until_complete(run_all)
-    finally:
-        loop.run_until_complete(loop.shutdown_asyncgens())
-        loop.close()
+        worktree = local_repo.get_worktree(path=worktree_path,
+                                           revision=repository.revision)
+        worktree_cm = _WorktreeRunner(worktree, semaphore=self._parallelism_sem)
+        return worktree_cm
