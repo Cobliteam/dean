@@ -1,5 +1,7 @@
+import os
+import re
 from enum import Enum
-from typing import Collection, Dict, Optional
+from typing import Any, Collection, Dict, Optional
 
 from dataclasses import dataclass
 
@@ -10,7 +12,6 @@ from .parser import parse
 class Build:
     project: str
     commands: Collection[str]
-    branches: Collection[str] = ('master',)
     include: Collection[str] = ('docs/',)
     exclude: Collection[str] = ()
 
@@ -25,17 +26,15 @@ class Repository:
     type: RepositoryType = RepositoryType.git
 
 
-@dataclass
-class Aggregate:
-    paths: Dict[str, Repository]
 
 
 @dataclass
 class Config:
     build: Optional[Build] = None
-    aggregate: Optional[Aggregate] = None
+    aggregate: Optional[Dict[str, Repository]] = None
+    branches: Collection[str] = ('master',)
     doc_branch: str = 'docs/{branch}'
 
     @classmethod
-    def parse(cls, data):
+    def parse(cls, data: Any) -> 'Config':
         return parse(cls, data)

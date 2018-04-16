@@ -1,27 +1,81 @@
+import logging
 from enum import Enum
-from typing import Any, Callable, Mapping, Sequence, Type, TypeVar, Union, \
-                   cast, get_type_hints
+from typing import Any, Callable, Collection, Dict, Generator, Mapping, \
+                   Optional, Tuple, Type, TypeVar, Union, cast, get_type_hints
+from typing import TypingMeta as TypingMeta
 
 
 T = TypeVar('T')
-K = TypeVar('K')
-V = TypeVar('V')
+KT = TypeVar('KT')
+VT_co = TypeVar('VT_co', covariant=True)
+
+CollectionBuilder = Callable[[Generator[T, None, None]], Collection[T]]
+MappingBuilder = Callable[[Generator[Tuple[KT, VT_co], None, None]],
+                          Mapping[KT, VT_co]]
+
+MetaTypeElm = Union[type, TypingMeta]
+MetaTypeSeq = Tuple[MetaTypeElm, ...]
+MetaType = Union[MetaTypeElm, MetaTypeSeq]
+
+logger = logging.getLogger(__name__)
+
+
+def _remove_type_params(tpe: MetaType) -> MetaTypeSeq:
+    def _clean(t: MetaType):
+        return getattr(t, '__origin__', None) or t
+
+    if isinstance(tpe, tuple):
+        return tuple(map(_clean, tpe))
+
+    return (_clean(tpe),)
+
+
+def _get_type_hints(obj: Any) -> Optional[Dict[str, Any]]:
+    try:
+        return get_type_hints(obj)
+    except TypeError:
+        return None
+
+
+def _is_type(obj: Any) -> bool:
+    return isinstance(obj, type) \
+           or isinstance(obj, TypingMeta) \
+           or isinstance(type(obj), TypingMeta)
+
+
+def _type_check(obj: Any, test: MetaType):
+    test_types = _remove_type_params(test)
+
+    try:
+        if _is_type(obj):
+            obj_type = _remove_type_params(obj)[0]
+            if obj_type in test_types:
+                return True
+
+            return issubclass(obj_type, test_types)
+        else:
+            return isinstance(obj, test_types)
+    except TypeError:
+        return False
 
 
 def parse(tpe: Type[T], value: Any) -> T:
-    if tpe == Any:
+    if _type_check(tpe, (Any, object)):
         return value
-    elif type(tpe) == type(Union):
-        for union_arg in cast(Union, tpe).__args__:
+    elif _type_check(tpe, Union):
+        errors = []
+        for union_arg in tpe.__args__:  # type: ignore
             try:
                 return parse(union_arg, value)
-            except TypeError:
+            except TypeError as e:
+                logger.exception('Failed to match type')
+                errors.append(e)
                 continue
 
         raise TypeError(
             'Value `{}` does not match type `{}`'.format(value, tpe))
-    elif issubclass(tpe, Mapping):
-        if not isinstance(value, Mapping):
+    elif _type_check(tpe, Mapping):
+        if not _type_check(value, Mapping):
             raise TypeError(
                 'Value `{}` does not match type `{}`'.format(value, tpe))
 
@@ -29,67 +83,71 @@ def parse(tpe: Type[T], value: Any) -> T:
         if key_t:
             return cast(T, parse_mapping(key_t, val_t, value))
         else:
-            return cast(T, parse_mapping(Any, Any, value))
-    elif issubclass(tpe, Sequence) \
+            return cast(T, parse_mapping(object, object, value))
+    elif _type_check(tpe, Collection) \
             and not issubclass(tpe, bytes) \
             and not issubclass(tpe, str):
-        if not isinstance(value, Sequence):
+        if not _type_check(value, Collection):
             raise TypeError(
                 'Value `{}` does not match type `{}`'.format(value, tpe))
 
+        coll_t = cast(Type[Collection], tpe)
         item_t = getattr(tpe, '__args__', (None,))[0]
         if item_t:
-            return parse_sequence(tpe, item_t, value)
+            return cast(T, parse_collection(coll_t, item_t, value))
         else:
-            return parse_sequence(tpe, Any, value)
-    elif issubclass(tpe, Enum):
+            return cast(T, parse_collection(coll_t, object, value))
+    elif _type_check(tpe, Enum):
+        enum_t = cast(Enum, tpe)
         try:
-            return tpe(value)
+            enum_val = enum_t(value)
         except ValueError:
             try:
-                return tpe[value]
+                enum_val = enum_t[value]
             except KeyError:
                 raise TypeError(
                     'No matching value for `{}` of enum for type `{}`'.format(
                         value, tpe))
-    elif get_type_hints(tpe):
+
+        return cast(T, enum_val)
+    elif _get_type_hints(tpe):
         return parse_hinted(tpe, value)
-    elif not isinstance(value, tpe):
+    elif not _type_check(value, tpe):
         raise TypeError(
             'Value `{}` does not match type `{}`'.format(value, tpe))
     else:
-        return cast(tpe, value)
+        return cast(T, value)
 
 
-def parse_sequence(seq_type: Type[Sequence], item_type: Type[T],
-                   seq: Sequence[Any]) -> Sequence[T]:
-    sequence_type: Callable = type(seq)
+def parse_collection(coll_type: Type[Collection], item_type: Type[T],
+                     coll: Collection[Any]) -> Collection[T]:
+    collection_type: CollectionBuilder[T] = type(coll)
 
     def gen_items():
-        for item in seq:
+        for item in coll:
             parsed = parse(item_type, item)
             yield parsed
 
-    return sequence_type(gen_items())
+    return collection_type(gen_items())
 
 
-def parse_mapping(key_type: Type[K], value_type: Type[V],
-                  dict_: Mapping[Any, Any]) -> Mapping[K, V]:
-    dict_type = type(dict_)
+def parse_mapping(key_type: Type[KT], value_type: Type[VT_co],
+                  mapping: Mapping[Any, Any]) -> Mapping[KT, VT_co]:
+    mapping_type: MappingBuilder[KT, VT_co] = type(mapping)
 
     def gen_items():
-        for key, value in dict_.items():
+        for key, value in mapping.items():
             key = parse(key_type, key)
             value = parse(value_type, value)
             yield cast(key_type, key), cast(value_type, value)
 
-    return dict_type(gen_items())
+    return mapping_type(gen_items())
 
 
 def parse_hinted(tpe: Type[T], value: Any) -> T:
-    if isinstance(value, tpe):
+    if _type_check(value, tpe):
         return value
-    elif not isinstance(value, Mapping):
+    elif not _type_check(value, Mapping):
         raise TypeError(
            'Value `{}` must be a Mapping to build a `{}`'.format(value, tpe))
 
@@ -105,4 +163,5 @@ def parse_hinted(tpe: Type[T], value: Any) -> T:
             yield field_name, parse(field_type, value[field_name])
 
     fields = dict(gen_fields())
-    return tpe(**fields)
+    builder: Callable[..., T] = tpe
+    return builder(**fields)
