@@ -14,11 +14,12 @@ setup(
     author_email='daniel@cobli.co',
     license='MIT',
     install_requires=[
-        'pyyaml',
         'GitPython',
+        'click',
+        'pyyaml',
         'dataclasses; python_version < "3.7"'
     ],
     entry_points={
-        'console_scripts': ['dean=dean.main:main']
+        'console_scripts': ['dean=dean.cli:main']
     },
     keywords='documentation git')
