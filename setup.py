@@ -14,7 +14,6 @@ setup(
     author_email='daniel@cobli.co',
     license='MIT',
     install_requires=[
-        'GitPython',
         'click',
         'pyyaml',
         'aiofiles',
