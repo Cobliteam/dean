@@ -1,9 +1,27 @@
-doc_branch: "docs/{{ branch }}"
+---
+doc_branch: "docs/{branch}"
+generate:
+  branches:
+    - master
+    - dev
+  build:
+    - "true"
+  include:
+    - docs/**
 aggregate:
+  branches:
+    - master
+    - dev
   paths:
-    /ruler:
-      - type: git
-        url: git@github.com:Cobliteam/ruler.git
-    /ansible:
-      - type: git
-        url: git@github.com:Cobliteam/ansible.git
+    "private/{branch}/alexstrasza-core":
+      type: git
+      url: git@github.com:Cobliteam/alexstrasza-core.git
+    "private/{branch}/alexstrasza-stream":
+      type: git
+      url: git@github.com:Cobliteam/alexstrasza-stream.git
+  build:
+    - cp redoc/* {root}
+    - cd api-docs; npm install; swagger-aggregate **/swagger.json > supper-swagger.json
+    - cp super-swagger.json swagger.json
+  deploy:
+    - aws s3 sync deploy whatevethefuck
