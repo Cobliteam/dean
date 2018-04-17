@@ -4,12 +4,14 @@ import signal
 import subprocess
 from functools import partial, wraps
 from signal import SIGHUP, SIGINT
-from typing import Any, Awaitable, Callable, IO, Optional, Sequence, Tuple, TypeVar, Union, cast
+from typing import Any, Awaitable, AsyncIterator, Callable, IO, Iterable, \
+                   Iterator, Optional, Sequence, Tuple, TypeVar, Union, cast
 
 import click
 
 
 T = TypeVar('T')
+T_co = TypeVar('T_co', covariant=True)
 _TXT = Union[bytes, str]
 _FILE = Union[None, int, IO[Any]]
 _LoopFactory = Callable[[], asyncio.AbstractEventLoop]
@@ -80,6 +82,28 @@ class AsyncLoopSupervisor:
             self.loop.stop()
 
 
+class AsyncIteratorWrapper(AsyncIterator[T_co]):
+    def __init__(self, iterlike: Union[Iterator[T_co], Iterable[T_co]],
+                 loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
+        self._loop = loop or asyncio.get_event_loop()
+        self._iterator: Iterator[T_co] = iter(iterlike)
+
+    def __aiter__(self) -> AsyncIterator[T_co]:
+        return self
+
+    def _next(self):
+        try:
+            return next(self._iterator)
+        except StopIteration:
+            raise StopAsyncIteration
+
+    async def __anext__(self) -> T_co:
+        try:
+            return (await delay(self._next, loop=self._loop))
+        except StopIteration:
+            raise StopAsyncIteration
+
+
 async def delay(f: Callable[..., T], *args: Any,
                 loop: Optional[asyncio.AbstractEventLoop] = None,
                 **kwargs) -> T:
@@ -91,13 +115,14 @@ async def delay(f: Callable[..., T], *args: Any,
 async def async_subprocess_run(
         program: _TXT,
         *args: _TXT,
-        input: Optional[bytes] = None,
+        input: Optional[_TXT] = None,
         stdout: _FILE = subprocess.PIPE,
         stderr: _FILE = None,
         loop: Optional[asyncio.AbstractEventLoop] = None,
         limit: int = 2 ** 32,
         shell: bool = False,
-        **kwargs) -> Tuple[Optional[bytes], Optional[bytes]]:
+        encoding: Optional[str] = None,
+        **kwargs) -> Tuple[Optional[_TXT], Optional[_TXT]]:
 
     loop = loop or asyncio.get_event_loop()
     cmd = [program]
@@ -111,11 +136,30 @@ async def async_subprocess_run(
             *cmd, stdout=stdout, stderr=stderr, loop=loop,
             limit=limit, **kwargs)
 
-    out, err = await proc.communicate(input)
-    ret = await proc.wait()
+    bytes_input: Optional[bytes] = None
+    if input:
+        if encoding:
+            if not isinstance(input, str):
+                raise TypeError('Input must be `str`')
 
+            bytes_input = cast(str, input).encode(encoding)
+        elif isinstance(input, bytes):
+            bytes_input = cast(bytes, input)
+        else:
+            raise TypeError('Input must be `bytes`')
+
+    out: _TXT
+    err: _TXT
+    out, err = await proc.communicate(bytes_input)
+    if encoding:
+        if out:
+            out = out.decode(encoding, errors='surrogate_or_strict')
+        if err:
+            err = err.decode(encoding, errors='surrogate_or_strict')
+
+    ret = await proc.wait()
     if ret != 0:
-        raise subprocess.CalledProcessError(ret, cmd, output=out)
+        raise subprocess.CalledProcessError(ret, cmd, output=out, stderr=err)
 
     return out, err
 
