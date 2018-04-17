@@ -70,3 +70,7 @@ async def async_copytree_pathspec(src: AnyStr, dest: AnyStr, **kwargs) -> None:
             await delay(os.makedirs, dest_path, exist_ok=True)
         else:
             await delay(shutil.copyfile, src_path, dest_path)
+
+
+def dir_is_empty(path):
+    return next(os.scandir(path), None) is None
