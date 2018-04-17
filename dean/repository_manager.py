@@ -42,6 +42,7 @@ class GitAsyncBase:
 
 @dataclass
 class LocalRepository(GitAsyncBase):
+    remote: Repository
     url: str
     path: str
     loop: asyncio.AbstractEventLoop
@@ -172,8 +173,9 @@ class RepositoryManager:
         fname = re.sub(r'/+', '_', url)
         path = os.path.join(self.base_dir, fname)
 
-        local_repo = LocalRepository(url=repository.clone_url(),
-                                     path=path, loop=self.loop)
+        local_repo = LocalRepository(
+            remote=repository, url=repository.clone_url(), path=path,
+            loop=self.loop)
         self._repos[url] = local_repo
         return local_repo
 
