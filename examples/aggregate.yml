@@ -1,13 +1,5 @@
 ---
 doc_branch: "docs/{branch}"
-generate:
-  branches:
-    - master
-    - dev
-  build:
-    - "true"
-  include:
-    - docs/**
 aggregate:
   branches:
     - master
@@ -23,5 +15,3 @@ aggregate:
     - cp redoc/* {root}
     - cd api-docs; npm install; swagger-aggregate **/swagger.json > supper-swagger.json
     - cp super-swagger.json swagger.json
-  deploy:
-    - aws s3 sync deploy whatevethefuck

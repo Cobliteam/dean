@@ -1,9 +1,7 @@
-doc_branch: "docs/{{ branch }}"
+---
+doc_branch: "docs/{branch}"
 build:
   commands:
-    - pip install -r requirements-doc.txt
-    - sphinx-build -b html . ./docs
-  include:
-    - docs/**
-  exclude:
-    - docs/ignored/**
+    - mkdir -p docs
+    - pandoc -f commonmark -t html5 -o docs/index.html
+  doc_root: /docs
