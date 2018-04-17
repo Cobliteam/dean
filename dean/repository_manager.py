@@ -10,7 +10,7 @@ from typing import Any, AsyncContextManager, Awaitable, Dict, List, Optional, \
 from dataclasses import dataclass, field
 
 from dean.config.model import Repository
-from dean.util import async_subprocess_run, delay
+from dean.util.async import async_subprocess_run, delay
 
 
 T = TypeVar('T')
@@ -20,18 +20,7 @@ logger = logging.getLogger(__name__)
 
 class GitAsyncBase:
     loop: asyncio.AbstractEventLoop
-
-    def _make_dir_sync(self, path: str) -> None:
-        if not os.path.isdir(path):
-            logger.debug('Creating directory: %s', path)
-            os.makedirs(path)
-
-    async def make_dir(self, path: str) -> None:
-        await delay(self._make_dir_sync, path, loop=self.loop)
-
-    async def rm_dir(self, path: str) -> None:
-        logger.info('Removing %s', path)
-        await delay(shutil.rmtree, path, loop=self.loop)
+    path: str
 
     async def run_git(self, *args: str, **kwargs) -> Optional[str]:
         kwargs['cwd'] = self.path
@@ -52,7 +41,7 @@ class LocalRepository(GitAsyncBase):
 
     async def _clone(self) -> None:
         async with self._lock:
-            await self.make_dir(self.path)
+            await delay(os.makedirs, self.path, exist_ok=True, loop=self.loop)
 
             git_test_path = os.path.join(self.path, 'packed-refs')
             if not os.path.exists(git_test_path):
@@ -77,7 +66,7 @@ class LocalRepository(GitAsyncBase):
 
     async def destroy(self) -> None:
         async with self._lock:
-            await self.rm_dir(self.path)
+            await delay(shutil.rmtree, self.path, loop=self.loop)
 
     async def _add_worktree(self, path, revision, detach=False) -> None:
         detach_args = ['--detach'] if detach else []
@@ -126,7 +115,7 @@ class LocalWorktree(GitAsyncBase):
             self._created = False
 
         if self._tmpdir:
-            await self.rm_dir(self._tmpdir)
+            await delay(shutil.rmtree, self._tmpdir, loop=self.loop)
             self._tmpdir = None
 
 
