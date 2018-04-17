@@ -9,19 +9,18 @@ from dataclasses import dataclass
 from .parser import parse
 
 
+RepositoryType = Enum('RepositoryType', 'git')
+
+
 class Commands(List[str]):
     pass
 
 
 @dataclass
 class Build:
-    project: str
-    commands: Collection[str]
-    include: Collection[str] = ('docs/',)
-    exclude: Collection[str] = ()
-
-
-RepositoryType = Enum('RepositoryType', 'git')
+    doc_root: str
+    build: Optional[Commands] = None
+    ignore: Optional[Collection[str]] = None
 
 
 @dataclass
@@ -48,14 +47,6 @@ class Repository:
         new_fields[2] = os.path.abspath(path)
 
         return urlunsplit(new_fields)
-
-
-@dataclass
-class Generate:
-    branches: Collection[str] = ('master',)
-    build: Optional[Commands] = None
-    include: Optional[Collection[str]] = None
-    exclude: Optional[Collection[str]] = None
 
 
 @dataclass
