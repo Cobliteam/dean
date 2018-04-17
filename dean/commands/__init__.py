@@ -1,7 +1,8 @@
 import asyncio
 import logging
 import os
-from typing import Dict, Optional
+from subprocess import CalledProcessError
+from typing import Optional
 
 from dataclasses import dataclass
 
@@ -53,4 +54,8 @@ class CommandRunner:
 
     async def run(self):
         for command in self.commands:
-            await self._run_command(command)
+            try:
+                await self._run_command(command)
+            except CalledProcessError as e:
+                logger.error(str(e))
+                raise RuntimeError('Failed to run command')
