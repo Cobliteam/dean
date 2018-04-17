@@ -1,7 +1,7 @@
 import os
 import os.path
 import shutil
-from typing import AnyStr, AsyncGenerator, Callable, List, Union
+from typing import AnyStr, AsyncGenerator, Callable, List, Optional, Union
 
 from pathspec.pathspec import PathSpec
 
@@ -49,13 +49,18 @@ async def async_walk(root: Path, *, depth_first=True,
                 yield path
 
 
-def async_glob_pathspec(root: Path, patterns: PathSpec, exclude: bool = False,
-                        **kwargs) \
+def async_glob_pathspec(root: Path, patterns: Optional[PathSpec],
+                        exclude: bool = False, **kwargs) \
         -> AsyncGenerator[Path, None]:
-    def _include(path):
+    def _exclude_patterns(path):
         return patterns.match_file(path) == (not exclude)
 
-    return async_walk(root, include=_include, **kwargs)
+    if patterns:
+        include = _exclude_patterns
+    else:
+        include = INCLUDE_ALL
+
+    return async_walk(root, include=include , **kwargs)
 
 
 async def async_copytree_pathspec(src: AnyStr, dest: AnyStr, **kwargs) -> None:
