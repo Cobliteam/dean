@@ -5,12 +5,12 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import Any, AsyncContextManager, Awaitable, Callable, Dict, List, \
-                   Optional, Set, TypeVar
+from typing import Any, AsyncContextManager, Awaitable, Dict, List, Optional, \
+                   Set, TypeVar
 from dataclasses import dataclass, field
 
 from dean.config.model import Repository
-from dean.util import async_subprocess_run
+from dean.util import async_subprocess_run, delay
 
 
 T = TypeVar('T')
@@ -19,20 +19,19 @@ logger = logging.getLogger(__name__)
 
 
 class GitAsyncBase:
+    loop: asyncio.AbstractEventLoop
+
     def _make_dir_sync(self, path: str) -> None:
         if not os.path.isdir(path):
             logger.debug('Creating directory: %s', path)
             os.makedirs(path)
 
-    async def delay(self, f: Callable[..., T], *args: Any) -> T:
-        return (await self.loop.run_in_executor(None, f, *args))
-
     async def make_dir(self, path: str) -> None:
-        await self.delay(self._make_dir_sync, path)
+        await delay(self._make_dir_sync, path, loop=self.loop)
 
     async def rm_dir(self, path: str) -> None:
         logger.info('Removing %s', path)
-        await self.delay(shutil.rmtree, path)
+        await delay(shutil.rmtree, path, loop=self.loop)
 
     async def run_git(self, *args: str, **kwargs) -> Optional[str]:
         kwargs['cwd'] = self.path
@@ -157,7 +156,7 @@ class RepositoryManager:
     base_dir: str
     parallelism: int = 1
     loop: asyncio.AbstractEventLoop = \
-        field(default_factory=asyncio.AbstractEventLoop)
+        field(default_factory=asyncio.get_event_loop)
 
     def __post_init__(self):
         self._parallelism_sem = asyncio.BoundedSemaphore(self.parallelism)
