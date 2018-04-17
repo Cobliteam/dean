@@ -21,6 +21,7 @@ Path = Union[bytes, str]
 logger = logging.getLogger(__name__)
 
 
+@dataclass
 class GitAsyncClient:
     path: str
     git_path: str = 'git'
@@ -40,17 +41,18 @@ class GitAsyncClient:
         return replace(self, path=path)
 
     async def run_git(self, *args: str, **kwargs) -> str:
-        kwargs['cwd'] = self.path
         cmd_args = [*args, *self._gen_args(kwargs)]
+        logger.debug('Running git command: %s', cmd_args)
+
         out, _ = await async_subprocess_run(
-            self.git_path, *args, *cmd_args, encoding='utf-8')
+            self.git_path, *cmd_args, encoding='utf-8', cwd=self.path)
         return out.rstrip()
 
     async def get_symbolic_ref(self, ref: str = 'HEAD', **kwargs) \
             -> Optional[str]:
         try:
             out = await self.run_git(
-                'symbolic-ref', '--quiet', ref, **kwargs)
+                'symbolic-ref', ref, **kwargs)
             return out
         except CalledProcessError:
             return None
@@ -174,7 +176,7 @@ class LocalWorktree(AsyncContextManager['LocalWorktree']):
     checkout: bool = True
 
     def __post_init__(self):
-        self._loop = self._client.loop
+        self._loop = self.client.loop
         self._tmpdir = None
         self._created = False
 
@@ -191,7 +193,8 @@ class LocalWorktree(AsyncContextManager['LocalWorktree']):
     async def destroy(self) -> None:
         if self._created:
             try:
-                await self.repository.client.remove_worktree(self.path)
+                await self.repository.client.remove_worktree(
+                    self.path,force=True)
             except subprocess.CalledProcessError:
                 logger.warn('Failed to clean up worktree %s', self.path)
 
