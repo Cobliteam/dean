@@ -92,8 +92,9 @@ def parse(tpe: Type[T], value: Any) -> T:
                 'Value `{}` does not match type `{}`'.format(value, tpe))
 
         coll_t = cast(Type[Collection], tpe)
-        item_t = getattr(tpe, '__args__', (None,))[0]
-        if item_t:
+        type_params = getattr(tpe, '__args__', None)
+        if type_params:
+            item_t = type_params[0]
             return cast(T, parse_collection(coll_t, item_t, value))
         else:
             return cast(T, parse_collection(coll_t, object, value))
