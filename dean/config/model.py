@@ -1,12 +1,16 @@
 import os
 import re
 from enum import Enum
-from typing import Any, Collection, Dict, Optional
+from typing import Any, Collection, Dict, List, Optional
 from urllib.parse import urlsplit, urlunsplit
 
 from dataclasses import dataclass
 
 from .parser import parse
+
+
+class Commands(List[str]):
+    pass
 
 
 @dataclass
@@ -23,7 +27,8 @@ RepositoryType = Enum('RepositoryType', 'git')
 @dataclass
 class Repository:
     url: str
-    revision: str = None
+    revision: Optional[str] = None
+    skip_if_failed: bool = False
     type: RepositoryType = RepositoryType.git
 
     def clone_url(self):
@@ -46,10 +51,26 @@ class Repository:
 
 
 @dataclass
+class Generate:
+    branches: Collection[str] = ('master',)
+    build: Optional[Commands] = None
+    include: Optional[Collection[str]] = None
+    exclude: Optional[Collection[str]] = None
+
+
+@dataclass
+class Aggregate:
+    paths: Dict[str, Repository]
+    branches: Collection[str] = ('master',)
+    prepare: Optional[Commands] = None
+    build: Optional[Commands] = None
+    deploy: Optional[Commands] = None
+
+
+@dataclass
 class Config:
     build: Optional[Build] = None
-    aggregate: Optional[Dict[str, Repository]] = None
-    branches: Collection[str] = ('master',)
+    aggregate: Optional[Aggregate] = None
     doc_branch: str = 'docs/{branch}'
 
     @classmethod
