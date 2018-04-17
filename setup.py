@@ -17,6 +17,7 @@ setup(
         'GitPython',
         'click',
         'pyyaml',
+        'aiofiles',
         'dataclasses; python_version < "3.7"'
     ],
     entry_points={
