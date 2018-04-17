@@ -18,6 +18,7 @@ setup(
         'click',
         'pyyaml',
         'aiofiles',
+        'pathspec',
         'dataclasses; python_version < "3.7"'
     ],
     entry_points={
