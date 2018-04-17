@@ -8,10 +8,9 @@ from pathspec.pathspec import PathSpec
 from pathspec.patterns.gitwildmatch import GitWildMatchPattern
 
 from dean.config.model import Config, Repository
-from dean.git import LocalRepository
+from dean.git import GitAsyncClient, LocalRepository
 from dean.util.async import click_async_cmd
 from dean.util.file import async_copytree_pathspec
-from dean.util.git import get_repo_branch_and_commit
 from dean.util.tempfile import AsyncTempDir
 from . import BuildOptions, CommandRunner
 
@@ -49,46 +48,61 @@ async def _build(ctx: click.Context, **kwargs) -> int:
     build_opts = ctx.find_object(BuildOptions)
     src_dir = build_opts.src_dir
 
-    repo_info = await get_repo_branch_and_commit(src_dir)
+    git_client = GitAsyncClient(path=src_dir)
+    target_branch = \
+        (await git_client.get_current_branch()) or build_opts.branch
 
-    target_branch = repo_info.branch or build_options.branch
     if not target_branch:
         logger.error('Repository has a detached HEAD, and does not have a '
                      'checked-out branch. Please manually specify the '
                      'target branch to build')
         return 1
 
-    repository = Repository(url=src_dir, revision=repo_info.commit)
+    commit = await git_client.get_head_commit()
+    repository = Repository(url=src_dir, revision=commit)
     local_repository = LocalRepository(
-        remote=repository, url=repository.url, path=src_dir)
+        remote=repository, url=repository.url, path=src_dir,
+        client=git_client.at_path(src_dir))
 
-    docs_branch = config.doc_branch.format(branch=repo_info.branch)
+    docs_branch = config.doc_branch.format(branch=target_branch)
 
     async with AsyncTempDir() as tmp_dir:
+        # Create the build worktree pointing to the chosen commit
         build_dir = os.path.join(tmp_dir, 'build')
         build_worktree = local_repository.get_worktree(
-            revision=repo_info.commit, path=build_dir, detach=True,
-            checkout=True)
+            revision=commit, path=build_dir, detach=True, checkout=True)
 
+        # We initially create the docs worktree, which is mean to be completely
+        # unrelated to the others from the HEAD, since we cannot create an
+        # orphan branch without checking it out. So we create it with an useless
+        # head and fix it up later
         docs_dir = os.path.join(tmp_dir, 'docs')
         docs_worktree = local_repository.get_worktree(
-            revision=docs_branch, path=docs_dir, detach=False, checkout=False)
+            revision=commit, path=docs_dir, detach=True, checkout=False)
 
-        async with build_worktree:
+        async with build_worktree, docs_worktree:
             if config.build.build:
-                builder = CommandRunner(config.build.build, cwd=build_worktree)
+                builder = CommandRunner(
+                    config.build.build, cwd=build_worktree.path)
                 await builder.run()
 
+            await docs_worktree.client.checkout_branch(
+                name=docs_branch, orphan=True)
+            await docs_worktree.client.run_git('rm', '-rf', '.')
+
+            doc_root = config.build.doc_root.lstrip('/')
+            doc_path = os.path.join(build_worktree.path, doc_root)
             ignore_patterns = parse_ignore_patterns(config.build.ignore)
 
-            async with docs_worktree:
-                doc_root = config.build.doc_root.lstrip('/')
-                doc_path = os.path.join(build_worktree.path, doc_root)
+            await async_copytree_pathspec(
+                src=doc_path, dest=docs_worktree.path,
+                patterns=ignore_patterns, exclude=True)
 
-                await async_copytree_pathspec(
-                    src=doc_path, dest=docs_worktree.path,
-                    patterns=ignore_patterns, exclude=True)
-                import pdb; pdb.set_trace()
+            await docs_worktree.client.run_git(
+                'add', '-A')
+
+            await docs_worktree.client.run_git(
+                'commit', '-m', 'Docs update')
 
     return 0
 
