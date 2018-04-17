@@ -1,7 +1,7 @@
 ---
 doc_branch: "docs/{branch}"
 build:
-  commands:
+  build:
     - mkdir -p docs
-    - pandoc -f commonmark -t html5 -o docs/index.html
+    - pandoc -f commonmark -t html5 -o docs/index.html README.md
   doc_root: /docs
