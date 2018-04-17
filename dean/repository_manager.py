@@ -5,8 +5,7 @@ import re
 import shutil
 import subprocess
 import tempfile
-from typing import Any, AsyncContextManager, Awaitable, Dict, List, Optional, \
-                   Set, TypeVar
+from typing import Any, AsyncContextManager, Awaitable, Dict, Optional, TypeVar
 from dataclasses import dataclass, field
 
 from dean.config.model import Repository
@@ -151,27 +150,35 @@ class RepositoryManager:
         self._parallelism_sem = asyncio.BoundedSemaphore(self.parallelism)
         self._repos: Dict[str, LocalRepository] = {}
 
-    def _get_local_repository(self, repository: Repository) -> LocalRepository:
-        url = repository.url
-
+    def import_local_repository(self, local_repository: LocalRepository) \
+            -> LocalRepository:
+        url = local_repository.remote.url
         existing_repo = self._repos.get(url)
         if existing_repo:
             return existing_repo
 
+        self._repos[url] = local_repository
+        return local_repository
+
+    def get_local_repository(self, repository: Repository) -> LocalRepository:
+        existing_repo = self._repos.get(repository.url)
+        if existing_repo:
+            return existing_repo
+
+        url = repository.url
         fname = re.sub(r'/+', '_', url)
         path = os.path.join(self.base_dir, fname)
 
         local_repo = LocalRepository(
             remote=repository, url=repository.clone_url(), path=path,
             loop=self.loop)
-        self._repos[url] = local_repo
-        return local_repo
+        return self.import_local_repository(local_repo)
 
     def checkout(self, repository: Repository) -> _WorktreeRunner:
-        local_repo = self._get_local_repository(repository)
+        local_repo = self.get_local_repository(repository)
         worktree_path = tempfile.mkdtemp(prefix='worktree_', dir=self.base_dir)
 
         worktree = local_repo.get_worktree(path=worktree_path,
                                            revision=repository.revision)
-        worktree_cm = _WorktreeRunner(worktree, semaphore=self._parallelism_sem)
-        return worktree_cm
+        runner = _WorktreeRunner(worktree, semaphore=self._parallelism_sem)
+        return runner
