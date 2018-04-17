@@ -8,4 +8,4 @@ flake8-import-order
 tox
 bumpversion
 twine
-mypy
+mypy >= 0.590
