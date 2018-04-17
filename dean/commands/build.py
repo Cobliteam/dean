@@ -1,76 +1,101 @@
-import asyncio
 import logging
 import os
-import shutil
-from functools import partial
+from functools import wraps
+from typing import Callable, Optional
 
-from dean.cli import main
+import click
+from pathspec.pathspec import PathSpec
+from pathspec.patterns.gitwildmatch import GitWildMatchPattern
+
 from dean.config.model import Config, Repository
-from dean.repository_manager import RepositoryManager
-from dean.util import click_async_cmd, delay
-
-from . import BuildOptions, CommandRunner, pass_config, with_build_options
+from dean.git import LocalRepository
+from dean.util.async import click_async_cmd
+from dean.util.file import async_copytree_pathspec
+from dean.util.git import get_repo_branch_and_commit
+from dean.util.tempfile import AsyncTempDir
+from . import BuildOptions, CommandRunner
 
 
 logger = logging.getLogger(__name__)
 
 
-def dir_is_empty(path):
-    return next(os.scandir(path), None) is None
+def build_options(f: Callable) -> Callable:
+    @click.option('--src-dir', '-d', default='.',
+                  type=click.Path(dir_okay=True, file_okay=False,
+                                  resolve_path=True, readable=True))
+    @click.option('--branch', '-b', type=str, default=None,
+                  help='Generate docs for the chosen branch only. If not '
+                       'passed, will be detected from the Git repository')
+    @click.pass_context
+    @wraps(f)
+    def wrapper(ctx: click.Context, *args, src_dir: str, branch: Optional[str],
+                **kwargs):
+        with ctx.scope(cleanup=False):
+            ctx.obj = BuildOptions(src_dir=src_dir, branch=branch)
+            return f(*args, **kwargs)
+
+    return wrapper
 
 
-async def git_copy_tree(*args, loop=None, **kwargs):
-    kwargs['ignore'] = shutil.ignore_patterns('.git')
-    call = partial(shutil.copytree, **kwargs)
-    return (await delay(call, *args, loop=loop))
+def parse_ignore_patterns(content: Optional[str]) -> Optional[PathSpec]:
+    if not content:
+        return None
+
+    return PathSpec.from_lines(GitWildMatchPattern, content.lines())
 
 
-async def _build(build_opts: BuildOptions, config: Config) -> int:
-    os.makedirs(build_opts.repo_dir, exist_ok=True)
-    os.makedirs(build_opts.dest_dir, exist_ok=True)
+async def _build(ctx: click.Context, **kwargs) -> int:
+    config = ctx.find_object(Config)
+    build_opts = ctx.find_object(BuildOptions)
+    src_dir = build_opts.src_dir
 
-    if not config.aggregate:
-        logger.warn(
-            'No aggregation defined in configuration file, nothing to do')
-        return 0
+    repo_info = await get_repo_branch_and_commit(src_dir)
 
-    if not dir_is_empty(build_opts.dest_dir):
-        logger.error('Destination directory must be empty')
+    target_branch = repo_info.branch or build_options.branch
+    if not target_branch:
+        logger.error('Repository has a detached HEAD, and does not have a '
+                     'checked-out branch. Please manually specify the '
+                     'target branch to build')
         return 1
 
-    branches = config.aggregate.branches
-    if build_opts.branch:
-        branches = [build_opts.branch]
+    repository = Repository(url=src_dir, revision=repo_info.commit)
+    local_repository = LocalRepository(
+        remote=repository, url=repository.url, path=src_dir)
 
-    manager = RepositoryManager(build_opts.repo_dir, build_opts.jobs)
+    docs_branch = config.doc_branch.format(branch=repo_info.branch)
 
-    async def process_repository(branch: str, path: str, repository: Repository):
-        path = path.lstrip('/').format(branch=branch)
-        dest_path = os.path.join(build_opts.dest_dir, path)
+    async with AsyncTempDir() as tmp_dir:
+        build_dir = os.path.join(tmp_dir, 'build')
+        build_worktree = local_repository.get_worktree(
+            revision=repo_info.commit, path=build_dir, detach=True,
+            checkout=True)
 
-        async with manager.checkout(repository) as local_repo:
-            await git_copy_tree(local_repo.path, dest_path)
+        docs_dir = os.path.join(tmp_dir, 'docs')
+        docs_worktree = local_repository.get_worktree(
+            revision=docs_branch, path=docs_dir, detach=False, checkout=False)
 
-    def repos():
-        for branch in branches:
-            for path, repository in config.aggregate.paths.items():
-                yield asyncio.ensure_future(
-                    process_repository(branch, path, repository))
+        async with build_worktree:
+            if config.build.build:
+                builder = CommandRunner(config.build.build, cwd=build_worktree)
+                await builder.run()
 
-    await asyncio.gather(*repos())
-    if config.aggregate.build:
-        await CommandRunner(config.aggregate.build).run()
+            ignore_patterns = parse_ignore_patterns(config.build.ignore)
+
+            async with docs_worktree:
+                doc_root = config.build.doc_root.lstrip('/')
+                doc_path = os.path.join(build_worktree.path, doc_root)
+
+                await async_copytree_pathspec(
+                    src=doc_path, dest=docs_worktree.path,
+                    patterns=ignore_patterns, exclude=True)
+                import pdb; pdb.set_trace()
 
     return 0
 
 
-@main.command()
-@pass_config
-@with_build_options
+@click.command()
+@build_options
+@click.pass_context
 @click_async_cmd
-async def build(build_opts: BuildOptions, config: Config, **kwargs) -> int:
-    ret = await _build(build_opts, config)
-    if ret != 0:
-        return ret
-
-    return 0
+async def build(ctx: click.Context, **kwargs):
+    await _build(ctx, **kwargs)

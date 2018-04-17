@@ -1,10 +1,11 @@
-import asyncio
 import logging
 from typing import IO, cast
 
 import click
 import yaml
 
+from dean.commands.aggregate import aggregate
+from dean.commands.build import build
 from dean.config.model import Config
 
 
@@ -24,8 +25,8 @@ def main(ctx: click.Context, debug: bool, config_file: str):
         unicode_f = cast(IO[str], f)
         config = Config.parse(yaml.safe_load(unicode_f))
 
-    loop = asyncio.get_event_loop()
     ctx.obj = config
 
 
-from dean.commands import build, deploy  # noqa
+main.add_command(aggregate)
+main.add_command(build)

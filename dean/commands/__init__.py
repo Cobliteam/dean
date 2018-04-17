@@ -1,21 +1,20 @@
 import asyncio
 import logging
 import os
-from dataclasses import dataclass  # noqa
-from functools import wraps
-from typing import Callable, Optional
+from typing import Dict, Optional
 
-import click
+from dataclasses import dataclass
 
-from dean.config.model import Commands, Config
-from dean.util import AsyncTempFile, async_subprocess_run, delay
+from dean.config.model import Commands
+from dean.util.async import async_subprocess_run, delay
+from dean.util.tempfile import AsyncTempFile
 
 
 logger = logging.getLogger(__name__)
 
 
 @dataclass
-class BuildOptions:
+class AggregateOptions:
     dest_dir: str
     repo_dir: str
     jobs: int
@@ -23,14 +22,17 @@ class BuildOptions:
 
 
 @dataclass
-class DeployOptions:
-    noop: str = ''
+class BuildOptions:
+    src_dir: str
+    branch: Optional[str] = None
 
 
 class CommandRunner:
     def __init__(self, commands: Commands,
-                 loop: Optional[asyncio.AbstractEventLoop] = None) -> None:
+                 loop: Optional[asyncio.AbstractEventLoop] = None,
+                 **kwargs) -> None:
         self.commands = commands
+        self._kwargs = kwargs
         self._loop = loop
 
     async def _run_command(self, command: str) -> None:
@@ -42,52 +44,13 @@ class CommandRunner:
                 await delay(os.fchmod, f.fileno(), 0o700)
                 await f.close()
 
-                await async_subprocess_run(f.name, stdout=None, loop=self._loop)
+                await async_subprocess_run(f.name, stdout=None, loop=self._loop,
+                                           **self._kwargs)
         else:
             logger.debug('Running command with shell: %s', command)
             await async_subprocess_run(command, stdout=None, shell=True,
-                                       loop=self._loop)
+                                       loop=self._loop, **self._kwargs)
 
     async def run(self):
         for command in self.commands:
             await self._run_command(command)
-
-
-pass_config = click.make_pass_decorator(Config)
-
-
-def with_build_options(f: Callable) -> Callable:
-    @click.option('--dest-dir', '-d',
-                  type=click.Path(dir_okay=True, file_okay=False, resolve_path=True,
-                                  writable=True),
-                  help='Destination directory to write aggregated docs into. '
-                       'Must be empty.')
-    @click.option('--repo-dir', default='./.dean-repos',
-                  type=click.Path(dir_okay=True, file_okay=False, resolve_path=True,
-                                  writable=True),
-                  help='Directory to clone all repositories into')
-    @click.option('--jobs', '-j', default=None, type=int,
-                  help='Number of parallel jobs to run. Set to 0 to automatically '
-                       'determine from number of CPUs.')
-    @click.option('--branch', '-b', type=str, default=None,
-                  help='Generate docs for this branch only')
-    @click.pass_context
-    @wraps(f)
-    def wrapper(ctx, *args, dest_dir, repo_dir, jobs, branch, **kwargs):
-        with ctx.scope(cleanup=False):
-            ctx.obj = BuildOptions(dest_dir=dest_dir, repo_dir=repo_dir,
-                                   jobs=jobs, branch=branch)
-            return f(ctx.obj, *args, **kwargs)
-
-    return wrapper
-
-
-def with_deploy_options(f: Callable) -> Callable:
-    @click.pass_context
-    @wraps(f)
-    def wrapper(ctx, *args, **kwargs):
-        with ctx.scope(cleanup=False):
-            ctx.obj = DeployOptions()
-            return f(ctx.obj, *args, **kwargs)
-
-    return wrapper
